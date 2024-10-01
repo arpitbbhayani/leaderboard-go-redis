@@ -1,10 +1,10 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/websocket"
@@ -61,7 +61,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		redisClient.Wait(context.TODO(), 1, 0)
+		time.Sleep(1 * time.Second)
 	}
 }
 
