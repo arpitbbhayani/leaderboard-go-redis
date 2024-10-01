@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaderboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>Leaderboard</h1>
+    <table>
+        <thead>
+            <tr>
+                <th>Rank</th>
+                <th>Name</th>
+                <th>Score</th>
+            </tr>
+        </thead>
+        <tbody id="leaderboard">
+        </tbody>
+    </table>
+
+    <h2>Update Score</h2>
+    <form id="updateForm">
+        <input type="text" id="name" placeholder="Name" required>
+        <input type="number" id="score" placeholder="Score" required>
+        <button type="submit">Update</button>
+    </form>
+
+    <script>
+        const socket = new WebSocket('ws://' + window.location.host + '/ws');
+        const leaderboard = document.getElementById('leaderboard');
+        const updateForm = document.getElementById('updateForm');
+
+        socket.onmessage = function(event) {
+            const scores = JSON.parse(event.data);
+            leaderboard.innerHTML = '';
+            scores.forEach((score, index) => {
+                const row = leaderboard.insertRow();
+                row.insertCell(0).textContent = index + 1;
+                row.insertCell(1).textContent = score.name;
+                row.insertCell(2).textContent = score.score;
+            });
+        };
+
+        updateForm.onsubmit = function(e) {
+            e.preventDefault();
+            const name = document.getElementById('name').value;
+            const score = document.getElementById('score').value;
+            fetch('/update', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name, score: parseInt(score) }),
+            });
+            updateForm.reset();
+        };
+    </script>
+</body>
+</html>
