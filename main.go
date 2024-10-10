@@ -1,18 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	dicedb "github.com/dicedb/go-dice"
+	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
-	"time"
-
-	"github.com/go-redis/redis/v8"
-	"github.com/gorilla/websocket"
+	"strconv"
 )
 
 var (
-	redisClient *redis.Client
-	upgrader    = websocket.Upgrader{
+	client   *dicedb.Client
+	upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
@@ -25,8 +26,9 @@ type Score struct {
 }
 
 func main() {
-	redisClient = redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
+	client = dicedb.NewClient(&dicedb.Options{
+		Addr: ":7379",
+		// Additional options can be set here as needed
 	})
 
 	http.HandleFunc("/", serveHome)
@@ -49,21 +51,77 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	ctx := context.Background()
+
+	// Create a new watch object
+	watch := client.WatchCommand(ctx)
+	if watch == nil {
+		log.Println("Failed to create watch")
+		return
+	}
+	defer watch.Close()
+
+	// Start watching for changes in the leaderboard
+	err = watch.Watch(ctx, "ZRANGE", "leaderboard", "0", "5", "REV", "WITHSCORES")
+	if err != nil {
+		log.Println("Failed to start watch:", err)
+		return
+	}
+
+	// Get the channel to receive messages
+	channel := watch.Channel()
+
+	// Listen for messages and send updates to the client
 	for {
-		scores, err := getTopScores()
-		if err != nil {
-			log.Println(err)
+		select {
+		case msg := <-channel:
+			// Parse the message data into []Score
+			scores, err := parseScores(msg.Data)
+			if err != nil {
+				log.Println("Failed to parse scores:", err)
+				continue
+			}
+
+			// Send the scores to the client
+			if err := conn.WriteJSON(scores); err != nil {
+				log.Println("WebSocket write error:", err)
+				return
+			}
+
+		case <-ctx.Done():
+			// Client disconnected
 			return
 		}
-
-		if err := conn.WriteJSON(scores); err != nil {
-			log.Println(err)
-			return
-		}
-
-		time.Sleep(1 * time.Second)
 	}
 }
+
+func parseScores(data interface{}) ([]Score, error) {
+	dataList, ok := data.([]interface{})
+	if !ok {
+		return nil, errUnexpectedDataType
+	}
+
+	var scores []Score
+	for i := 0; i < len(dataList); i += 2 {
+		member, ok1 := dataList[i].(string)
+		scoreStr, ok2 := dataList[i+1].(string)
+		if !ok1 || !ok2 {
+			return nil, errUnexpectedDataType
+		}
+		scoreFloat, err := strconv.ParseFloat(scoreStr, 64)
+		if err != nil {
+			return nil, err
+		}
+		score := int(scoreFloat)
+		scores = append(scores, Score{
+			Name:  member,
+			Score: score,
+		})
+	}
+	return scores, nil
+}
+
+var errUnexpectedDataType = fmt.Errorf("unexpected data type in message")
 
 func handleUpdate(w http.ResponseWriter, r *http.Request) {
 	var score Score
@@ -72,7 +130,7 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := redisClient.ZAdd(r.Context(), "leaderboard", &redis.Z{
+	err := client.ZAdd(r.Context(), "leaderboard", dicedb.Z{
 		Score:  float64(score.Score),
 		Member: score.Name,
 	}).Err()
@@ -83,22 +141,4 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-}
-
-func getTopScores() ([]Score, error) {
-	cmd := redisClient.ZRevRangeWithScores(redisClient.Context(), "leaderboard", 0, 5)
-	result, err := cmd.Result()
-	if err != nil {
-		return nil, err
-	}
-
-	var scores []Score
-	for _, z := range result {
-		scores = append(scores, Score{
-			Name:  z.Member.(string),
-			Score: int(z.Score),
-		})
-	}
-
-	return scores, nil
 }
