@@ -11,12 +11,14 @@ import (
 )
 
 var (
-	redisClient *redis.Client
-	upgrader    = websocket.Upgrader{
+	client   *redis.Client
+	upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
 	}
+
+	connectedUsers []*websocket.Conn
 )
 
 type Score struct {
@@ -25,9 +27,10 @@ type Score struct {
 }
 
 func main() {
-	redisClient = redis.NewClient(&redis.Options{
+	client = redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
+	go watchLoop()
 
 	http.HandleFunc("/", serveHome)
 	http.HandleFunc("/ws", handleWebSocket)
@@ -47,8 +50,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
-	defer conn.Close()
 
+	connectedUsers = append(connectedUsers, conn)
+}
+
+func watchLoop() {
 	for {
 		scores, err := getTopScores()
 		if err != nil {
@@ -56,9 +62,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := conn.WriteJSON(scores); err != nil {
-			log.Println(err)
-			return
+		for _, conn := range connectedUsers {
+			if err := conn.WriteJSON(scores); err != nil {
+				log.Println("websocket write error:", err)
+				// TODO: remove the connection from the list
+			}
 		}
 
 		time.Sleep(1 * time.Second)
@@ -72,7 +80,7 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := redisClient.ZAdd(r.Context(), "leaderboard", &redis.Z{
+	err := client.ZAdd(r.Context(), "leaderboard", &redis.Z{
 		Score:  float64(score.Score),
 		Member: score.Name,
 	}).Err()
@@ -86,7 +94,7 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func getTopScores() ([]Score, error) {
-	cmd := redisClient.ZRevRangeWithScores(redisClient.Context(), "leaderboard", 0, 5)
+	cmd := client.ZRevRangeWithScores(client.Context(), "leaderboard", 0, 5)
 	result, err := cmd.Result()
 	if err != nil {
 		return nil, err
